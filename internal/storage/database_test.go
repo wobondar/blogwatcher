@@ -369,3 +369,200 @@ func TestLookupHelpers(t *testing.T) {
 		t.Fatalf("expected missing article to not exist")
 	}
 }
+
+func TestCategoriesHelpers(t *testing.T) {
+	if result := categoriesToString(nil); result != nil {
+		t.Fatalf("expected nil for empty categories, got %v", result)
+	}
+	if result := categoriesToString([]string{}); result != nil {
+		t.Fatalf("expected nil for empty slice, got %v", result)
+	}
+	s := categoriesToString([]string{"AI", "Security"})
+	if s == nil || *s != "AI,Security" {
+		t.Fatalf("expected 'AI,Security', got %v", s)
+	}
+
+	if result := categoriesFromString(nil); result != nil {
+		t.Fatalf("expected nil for nil string, got %v", result)
+	}
+	empty := ""
+	if result := categoriesFromString(&empty); result != nil {
+		t.Fatalf("expected nil for empty string, got %v", result)
+	}
+	cats := "AI,Security"
+	result := categoriesFromString(&cats)
+	if len(result) != 2 || result[0] != "AI" || result[1] != "Security" {
+		t.Fatalf("expected [AI Security], got %v", result)
+	}
+}
+
+func TestCategoriesStorageAndFiltering(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "blogwatcher.db")
+	db, err := OpenDatabase(path)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	blog, err := db.AddBlog(model.Blog{Name: "Test", URL: "https://example.com"})
+	if err != nil {
+		t.Fatalf("add blog: %v", err)
+	}
+
+	// Article with categories
+	a1, err := db.AddArticle(model.Article{
+		BlogID:     blog.ID,
+		Title:      "AI Post",
+		URL:        "https://example.com/ai",
+		Categories: []string{"AI", "Machine Learning"},
+	})
+	if err != nil {
+		t.Fatalf("add article: %v", err)
+	}
+
+	// Article with different categories
+	_, err = db.AddArticle(model.Article{
+		BlogID:     blog.ID,
+		Title:      "Security Post",
+		URL:        "https://example.com/sec",
+		Categories: []string{"Security"},
+	})
+	if err != nil {
+		t.Fatalf("add article: %v", err)
+	}
+
+	// Article with no categories
+	_, err = db.AddArticle(model.Article{
+		BlogID: blog.ID,
+		Title:  "Plain Post",
+		URL:    "https://example.com/plain",
+	})
+	if err != nil {
+		t.Fatalf("add article: %v", err)
+	}
+
+	// Verify categories round-trip
+	fetched, err := db.GetArticle(a1.ID)
+	if err != nil {
+		t.Fatalf("get article: %v", err)
+	}
+	if len(fetched.Categories) != 2 || fetched.Categories[0] != "AI" || fetched.Categories[1] != "Machine Learning" {
+		t.Fatalf("expected categories [AI Machine Learning], got %v", fetched.Categories)
+	}
+
+	// Filter by exact category
+	cat := "AI"
+	filtered, err := db.ListArticles(false, nil, &cat)
+	if err != nil {
+		t.Fatalf("filter by category: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].Title != "AI Post" {
+		t.Fatalf("expected 1 AI article, got %d", len(filtered))
+	}
+
+	// Case-insensitive filter
+	catLower := "ai"
+	filtered, err = db.ListArticles(false, nil, &catLower)
+	if err != nil {
+		t.Fatalf("filter by lowercase category: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].Title != "AI Post" {
+		t.Fatalf("expected case-insensitive match, got %d articles", len(filtered))
+	}
+
+	// Case-insensitive: uppercase query matches lowercase stored
+	_, err = db.AddArticle(model.Article{
+		BlogID:     blog.ID,
+		Title:      "Lowercase Category Post",
+		URL:        "https://example.com/lower",
+		Categories: []string{"security", "devops"},
+	})
+	if err != nil {
+		t.Fatalf("add article: %v", err)
+	}
+
+	catUpper := "Security"
+	filtered, err = db.ListArticles(false, nil, &catUpper)
+	if err != nil {
+		t.Fatalf("filter by uppercase category: %v", err)
+	}
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 security articles (case-insensitive), got %d", len(filtered))
+	}
+
+	// Mixed case query
+	catMixed := "sEcUrItY"
+	filtered, err = db.ListArticles(false, nil, &catMixed)
+	if err != nil {
+		t.Fatalf("filter by mixed case category: %v", err)
+	}
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 security articles (mixed case), got %d", len(filtered))
+	}
+
+	// Should NOT match substring - "AI" should not match "FAIR"
+	_, err = db.AddArticle(model.Article{
+		BlogID:     blog.ID,
+		Title:      "Fair Post",
+		URL:        "https://example.com/fair",
+		Categories: []string{"FAIR"},
+	})
+	if err != nil {
+		t.Fatalf("add article: %v", err)
+	}
+
+	filtered, err = db.ListArticles(false, nil, &cat)
+	if err != nil {
+		t.Fatalf("filter by category after FAIR added: %v", err)
+	}
+	if len(filtered) != 1 {
+		t.Fatalf("expected AI filter to NOT match FAIR, got %d articles", len(filtered))
+	}
+
+	// No category filter returns all
+	all, err := db.ListArticles(false, nil, nil)
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if len(all) != 5 {
+		t.Fatalf("expected 5 articles, got %d", len(all))
+	}
+}
+
+func TestCategoriesBulkInsert(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "blogwatcher.db")
+	db, err := OpenDatabase(path)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	blog, err := db.AddBlog(model.Blog{Name: "Test", URL: "https://example.com"})
+	if err != nil {
+		t.Fatalf("add blog: %v", err)
+	}
+
+	articles := []model.Article{
+		{BlogID: blog.ID, Title: "Post 1", URL: "https://example.com/1", Categories: []string{"Go", "Testing"}},
+		{BlogID: blog.ID, Title: "Post 2", URL: "https://example.com/2", Categories: []string{"Rust"}},
+		{BlogID: blog.ID, Title: "Post 3", URL: "https://example.com/3"},
+	}
+	count, err := db.AddArticlesBulk(articles)
+	if err != nil {
+		t.Fatalf("bulk insert: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("expected 3, got %d", count)
+	}
+
+	cat := "Go"
+	filtered, err := db.ListArticles(false, nil, &cat)
+	if err != nil {
+		t.Fatalf("filter: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].Title != "Post 1" {
+		t.Fatalf("expected 1 Go article, got %d", len(filtered))
+	}
+}

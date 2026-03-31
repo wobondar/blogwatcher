@@ -328,8 +328,8 @@ func (db *Database) ListArticles(unreadOnly bool, blogID *int64, category *strin
 		args = append(args, *blogID)
 	}
 	if category != nil && *category != "" {
-		query += " AND categories LIKE ?"
-		args = append(args, "%"+*category+"%")
+		query += " AND (',' || LOWER(categories) || ',' LIKE '%,' || LOWER(?) || ',%')"
+		args = append(args, *category)
 	}
 	query += " ORDER BY discovered_date DESC"
 	rows, err := db.conn.Query(query, args...)

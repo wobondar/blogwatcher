@@ -389,6 +389,9 @@ func printArticle(article model.Article, blogName string) {
 	if article.PublishedDate != nil {
 		fmt.Printf("       Published: %s\n", article.PublishedDate.Format("2006-01-02"))
 	}
+	if len(article.Categories) > 0 {
+		fmt.Printf("       Categories: %s\n", strings.Join(article.Categories, ", "))
+	}
 	fmt.Println()
 }
 

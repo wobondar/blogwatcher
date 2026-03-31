@@ -7,6 +7,7 @@ A Go CLI tool to track blog articles, detect new posts, and manage read/unread s
 -   **Dual Source Support** - Tries RSS feeds first, falls back to HTML scraping
 -   **Automatic Feed Discovery** - Detects RSS/Atom URLs from blog homepages
 -   **Read/Unread Management** - Track which articles you've read
+-   **Category Support** - View and filter articles by RSS/Atom categories
 -   **Blog Filtering** - View articles from specific blogs
 -   **Duplicate Prevention** - Never tracks the same article twice
 -   **Colored CLI Output** - User-friendly terminal interface
@@ -75,6 +76,12 @@ blogwatcher articles --all
 
 # List articles from a specific blog
 blogwatcher articles --blog "Tech Blog"
+
+# Filter by category (case-insensitive)
+blogwatcher articles --category "AI"
+
+# Combine filters
+blogwatcher articles --blog "Tech Blog" --category "Security"
 ```
 
 ### Managing Read Status
@@ -126,7 +133,7 @@ When RSS isn't available, provide a CSS selector that matches article links:
 BlogWatcher stores data in SQLite at `~/.blogwatcher/blogwatcher.db`:
 
 -   **blogs** - Tracked blogs (name, URL, feed URL, scrape selector)
--   **articles** - Discovered articles (title, URL, dates, read status)
+-   **articles** - Discovered articles (title, URL, dates, read status, categories)
 
 ## Development
 
