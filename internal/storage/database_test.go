@@ -247,12 +247,13 @@ func TestListArticlesFiltersAndOrdering(t *testing.T) {
 
 	t1 := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
 	t2 := time.Date(2024, 1, 1, 11, 0, 0, 0, time.UTC)
+	t3 := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	first, err := db.AddArticle(model.Article{BlogID: blogA.ID, Title: "Old", URL: "https://a.example.com/old", DiscoveredDate: &t1})
 	if err != nil {
 		t.Fatalf("add article: %v", err)
 	}
-	second, err := db.AddArticle(model.Article{BlogID: blogA.ID, Title: "New", URL: "https://a.example.com/new", DiscoveredDate: &t2})
+	second, err := db.AddArticle(model.Article{BlogID: blogA.ID, Title: "New", URL: "https://a.example.com/new", DiscoveredDate: &t3})
 	if err != nil {
 		t.Fatalf("add article: %v", err)
 	}
@@ -370,27 +371,27 @@ func TestLookupHelpers(t *testing.T) {
 	}
 }
 
-func TestCategoriesHelpers(t *testing.T) {
-	if result := categoriesToString(nil); result != nil {
+func TestListStringHelpers(t *testing.T) {
+	if result := listToString(nil); result != nil {
 		t.Fatalf("expected nil for empty categories, got %v", result)
 	}
-	if result := categoriesToString([]string{}); result != nil {
+	if result := listToString([]string{}); result != nil {
 		t.Fatalf("expected nil for empty slice, got %v", result)
 	}
-	s := categoriesToString([]string{"AI", "Security"})
+	s := listToString([]string{"AI", "Security"})
 	if s == nil || *s != "AI,Security" {
 		t.Fatalf("expected 'AI,Security', got %v", s)
 	}
 
-	if result := categoriesFromString(nil); result != nil {
+	if result := listFromString(nil); result != nil {
 		t.Fatalf("expected nil for nil string, got %v", result)
 	}
 	empty := ""
-	if result := categoriesFromString(&empty); result != nil {
+	if result := listFromString(&empty); result != nil {
 		t.Fatalf("expected nil for empty string, got %v", result)
 	}
 	cats := "AI,Security"
-	result := categoriesFromString(&cats)
+	result := listFromString(&cats)
 	if len(result) != 2 || result[0] != "AI" || result[1] != "Security" {
 		t.Fatalf("expected [AI Security], got %v", result)
 	}
@@ -564,5 +565,298 @@ func TestCategoriesBulkInsert(t *testing.T) {
 	}
 	if len(filtered) != 1 || filtered[0].Title != "Post 1" {
 		t.Fatalf("expected 1 Go article, got %d", len(filtered))
+	}
+}
+
+func TestDeleteOldArticles(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "blogwatcher.db")
+	db, err := OpenDatabase(path)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	blog, err := db.AddBlog(model.Blog{Name: "Test", URL: "https://example.com"})
+	if err != nil {
+		t.Fatalf("add blog: %v", err)
+	}
+
+	old := time.Now().AddDate(0, 0, -400)
+	recent := time.Now().AddDate(0, 0, -10)
+
+	_, err = db.AddArticle(model.Article{BlogID: blog.ID, Title: "Old", URL: "https://example.com/old", DiscoveredDate: &old})
+	if err != nil {
+		t.Fatalf("add old article: %v", err)
+	}
+	_, err = db.AddArticle(model.Article{BlogID: blog.ID, Title: "Recent", URL: "https://example.com/recent", DiscoveredDate: &recent})
+	if err != nil {
+		t.Fatalf("add recent article: %v", err)
+	}
+
+	cutoff := time.Now().AddDate(0, 0, -365)
+	deleted, err := db.DeleteOldArticles(cutoff)
+	if err != nil {
+		t.Fatalf("delete old articles: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("expected 1 deleted, got %d", deleted)
+	}
+
+	all, err := db.ListArticles(false, nil, nil)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 1 || all[0].Title != "Recent" {
+		t.Fatalf("expected only recent article, got %d", len(all))
+	}
+}
+
+func TestDeleteOldArticlesNoneToDelete(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "blogwatcher.db")
+	db, err := OpenDatabase(path)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	blog, err := db.AddBlog(model.Blog{Name: "Test", URL: "https://example.com"})
+	if err != nil {
+		t.Fatalf("add blog: %v", err)
+	}
+
+	recent := time.Now()
+	_, err = db.AddArticle(model.Article{BlogID: blog.ID, Title: "Fresh", URL: "https://example.com/fresh", DiscoveredDate: &recent})
+	if err != nil {
+		t.Fatalf("add article: %v", err)
+	}
+
+	cutoff := time.Now().AddDate(0, 0, -365)
+	deleted, err := db.DeleteOldArticles(cutoff)
+	if err != nil {
+		t.Fatalf("delete old articles: %v", err)
+	}
+	if deleted != 0 {
+		t.Fatalf("expected 0 deleted, got %d", deleted)
+	}
+}
+
+func TestBlogTopicsRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "blogwatcher.db")
+	db, err := OpenDatabase(path)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	blog, err := db.AddBlog(model.Blog{Name: "Test", URL: "https://example.com", Topics: []string{"go", "security"}})
+	if err != nil {
+		t.Fatalf("add blog: %v", err)
+	}
+
+	fetched, err := db.GetBlog(blog.ID)
+	if err != nil {
+		t.Fatalf("get blog: %v", err)
+	}
+	if len(fetched.Topics) != 2 || fetched.Topics[0] != "go" || fetched.Topics[1] != "security" {
+		t.Fatalf("expected topics [go security], got %v", fetched.Topics)
+	}
+
+	// No topics
+	blog2, err := db.AddBlog(model.Blog{Name: "Plain", URL: "https://plain.example.com"})
+	if err != nil {
+		t.Fatalf("add blog: %v", err)
+	}
+	fetched2, err := db.GetBlog(blog2.ID)
+	if err != nil {
+		t.Fatalf("get blog: %v", err)
+	}
+	if fetched2.Topics != nil {
+		t.Fatalf("expected nil topics, got %v", fetched2.Topics)
+	}
+}
+
+func TestListBlogsByTopics(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "blogwatcher.db")
+	db, err := OpenDatabase(path)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.AddBlog(model.Blog{Name: "GoBlog", URL: "https://go.example.com", Topics: []string{"go", "programming"}})
+	if err != nil {
+		t.Fatalf("add blog: %v", err)
+	}
+	_, err = db.AddBlog(model.Blog{Name: "SecurityBlog", URL: "https://sec.example.com", Topics: []string{"security"}})
+	if err != nil {
+		t.Fatalf("add blog: %v", err)
+	}
+	_, err = db.AddBlog(model.Blog{Name: "NullBlog", URL: "https://null.example.com"})
+	if err != nil {
+		t.Fatalf("add blog: %v", err)
+	}
+
+	// Single topic filter
+	goBlogs, err := db.ListBlogsByTopics([]string{"go"})
+	if err != nil {
+		t.Fatalf("list by topic: %v", err)
+	}
+	if len(goBlogs) != 1 || goBlogs[0].Name != "GoBlog" {
+		t.Fatalf("expected 1 go blog, got %d", len(goBlogs))
+	}
+
+	// Case-insensitive
+	goBlogs2, err := db.ListBlogsByTopics([]string{"GO"})
+	if err != nil {
+		t.Fatalf("list by topic uppercase: %v", err)
+	}
+	if len(goBlogs2) != 1 {
+		t.Fatalf("expected case-insensitive match, got %d", len(goBlogs2))
+	}
+
+	// No match
+	empty, err := db.ListBlogsByTopics([]string{"rust"})
+	if err != nil {
+		t.Fatalf("list by topic no match: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected 0 blogs, got %d", len(empty))
+	}
+
+	// Substring should NOT match - "go" should not match "golang"
+	_, err = db.AddBlog(model.Blog{Name: "GolangBlog", URL: "https://golang.example.com", Topics: []string{"golang"}})
+	if err != nil {
+		t.Fatalf("add blog: %v", err)
+	}
+	goBlogs3, err := db.ListBlogsByTopics([]string{"go"})
+	if err != nil {
+		t.Fatalf("list by topic after golang added: %v", err)
+	}
+	if len(goBlogs3) != 1 {
+		t.Fatalf("expected go filter to NOT match golang, got %d blogs", len(goBlogs3))
+	}
+
+	// Multiple topics — should match go AND security blogs
+	multi, err := db.ListBlogsByTopics([]string{"go", "security"})
+	if err != nil {
+		t.Fatalf("list by multiple topics: %v", err)
+	}
+	if len(multi) != 2 {
+		t.Fatalf("expected 2 blogs for go+security, got %d", len(multi))
+	}
+
+	// Empty topics returns all blogs
+	all, err := db.ListBlogsByTopics(nil)
+	if err != nil {
+		t.Fatalf("list by nil topics: %v", err)
+	}
+	if len(all) != 4 {
+		t.Fatalf("expected 4 blogs for nil topics, got %d", len(all))
+	}
+}
+
+func TestGetStatsEmpty(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "blogwatcher.db")
+	db, err := OpenDatabase(path)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	stats, err := db.GetStats()
+	if err != nil {
+		t.Fatalf("get stats: %v", err)
+	}
+	if stats.TotalBlogs != 0 || stats.TotalArticles != 0 || stats.ReadArticles != 0 || stats.UnreadArticles != 0 {
+		t.Fatalf("expected all zeros, got %+v", stats)
+	}
+	if len(stats.Topics) != 0 {
+		t.Fatalf("expected empty topics, got %v", stats.Topics)
+	}
+	if stats.OldestArticle != nil || stats.NewestArticle != nil {
+		t.Fatalf("expected nil dates on empty db")
+	}
+	if stats.LastScanTime != nil {
+		t.Fatalf("expected nil last scan on empty db")
+	}
+	if stats.DatabaseSize <= 0 {
+		t.Fatalf("expected positive db size, got %d", stats.DatabaseSize)
+	}
+}
+
+func TestGetStatsPopulated(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "blogwatcher.db")
+	db, err := OpenDatabase(path)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.AddBlog(model.Blog{Name: "GoBlog", URL: "https://go.example.com", Topics: []string{"go", "programming"}})
+	if err != nil {
+		t.Fatalf("add blog: %v", err)
+	}
+	_, err = db.AddBlog(model.Blog{Name: "SecBlog", URL: "https://sec.example.com", Topics: []string{"security", "go"}})
+	if err != nil {
+		t.Fatalf("add blog: %v", err)
+	}
+	_, err = db.AddBlog(model.Blog{Name: "PlainBlog", URL: "https://plain.example.com"})
+	if err != nil {
+		t.Fatalf("add blog: %v", err)
+	}
+
+	goBlog, _ := db.GetBlogByName("GoBlog")
+	secBlog, _ := db.GetBlogByName("SecBlog")
+
+	now := time.Now()
+	a1, _ := db.AddArticle(model.Article{BlogID: goBlog.ID, Title: "Go1", URL: "https://go.example.com/1", DiscoveredDate: &now})
+	_, _ = db.AddArticle(model.Article{BlogID: goBlog.ID, Title: "Go2", URL: "https://go.example.com/2", DiscoveredDate: &now})
+	_, _ = db.AddArticle(model.Article{BlogID: secBlog.ID, Title: "Sec1", URL: "https://sec.example.com/1", DiscoveredDate: &now})
+
+	db.MarkArticleRead(a1.ID)
+
+	stats, err := db.GetStats()
+	if err != nil {
+		t.Fatalf("get stats: %v", err)
+	}
+
+	if stats.TotalBlogs != 3 {
+		t.Fatalf("expected 3 blogs, got %d", stats.TotalBlogs)
+	}
+	if stats.TotalArticles != 3 {
+		t.Fatalf("expected 3 articles, got %d", stats.TotalArticles)
+	}
+	if stats.ReadArticles != 1 {
+		t.Fatalf("expected 1 read, got %d", stats.ReadArticles)
+	}
+	if stats.UnreadArticles != 2 {
+		t.Fatalf("expected 2 unread, got %d", stats.UnreadArticles)
+	}
+	goTopic := stats.Topics["go"]
+	if goTopic == nil || goTopic.Blogs != 2 {
+		t.Fatalf("expected 2 blogs with 'go' topic, got %+v", goTopic)
+	}
+	if goTopic.Total != 3 || goTopic.Read != 1 || goTopic.Unread != 2 {
+		t.Fatalf("expected go topic: 3 total, 1 read, 2 unread, got %+v", goTopic)
+	}
+	progTopic := stats.Topics["programming"]
+	if progTopic == nil || progTopic.Blogs != 1 || progTopic.Total != 2 {
+		t.Fatalf("expected 1 blog, 2 articles with 'programming' topic, got %+v", progTopic)
+	}
+	secTopic := stats.Topics["security"]
+	if secTopic == nil || secTopic.Blogs != 1 || secTopic.Total != 1 || secTopic.Unread != 1 {
+		t.Fatalf("expected 1 blog, 1 unread article with 'security' topic, got %+v", secTopic)
+	}
+	if stats.OldestArticle == nil || stats.NewestArticle == nil {
+		t.Fatalf("expected non-nil article dates")
+	}
+	if stats.DatabaseSize <= 0 {
+		t.Fatalf("expected positive db size, got %d", stats.DatabaseSize)
 	}
 }

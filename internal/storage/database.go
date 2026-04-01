@@ -76,7 +76,8 @@ func (db *Database) init() error {
 		url TEXT NOT NULL UNIQUE,
 		feed_url TEXT,
 		scrape_selector TEXT,
-		last_scanned TIMESTAMP
+		last_scanned TIMESTAMP,
+		topics TEXT
 	);
 	CREATE TABLE IF NOT EXISTS articles (
 		id INTEGER PRIMARY KEY,
@@ -110,10 +111,35 @@ func (db *Database) migrate() error {
 			return err
 		}
 	}
+
+	err = db.conn.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('blogs') WHERE name = 'topics'",
+	).Scan(&count)
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		_, err = db.conn.Exec("ALTER TABLE blogs ADD COLUMN topics TEXT")
+		if err != nil {
+			return err
+		}
+	}
+
+	indexes := []string{
+		"CREATE INDEX IF NOT EXISTS idx_articles_blog_id ON articles(blog_id)",
+		"CREATE INDEX IF NOT EXISTS idx_articles_is_read_discovered ON articles(is_read, discovered_date DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_articles_discovered_date ON articles(discovered_date)",
+	}
+	for _, idx := range indexes {
+		if _, err := db.conn.Exec(idx); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
-func categoriesToString(categories []string) *string {
+func listToString(categories []string) *string {
 	if len(categories) == 0 {
 		return nil
 	}
@@ -121,7 +147,7 @@ func categoriesToString(categories []string) *string {
 	return &s
 }
 
-func categoriesFromString(s *string) []string {
+func listFromString(s *string) []string {
 	if s == nil || *s == "" {
 		return nil
 	}
@@ -130,9 +156,9 @@ func categoriesFromString(s *string) []string {
 
 func (db *Database) AddBlog(blog model.Blog) (model.Blog, error) {
 	result, err := db.conn.Exec(
-		`INSERT INTO blogs (name, url, feed_url, scrape_selector, last_scanned) VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO blogs (name, url, feed_url, scrape_selector, last_scanned, topics) VALUES (?, ?, ?, ?, ?, ?)`,
 		blog.Name, blog.URL, nullIfEmpty(blog.FeedURL), nullIfEmpty(blog.ScrapeSelector),
-		formatTimePtr(blog.LastScanned),
+		formatTimePtr(blog.LastScanned), listToString(blog.Topics),
 	)
 	if err != nil {
 		return blog, err
@@ -146,22 +172,52 @@ func (db *Database) AddBlog(blog model.Blog) (model.Blog, error) {
 }
 
 func (db *Database) GetBlog(id int64) (*model.Blog, error) {
-	row := db.conn.QueryRow(`SELECT id, name, url, feed_url, scrape_selector, last_scanned FROM blogs WHERE id = ?`, id)
+	row := db.conn.QueryRow(`SELECT id, name, url, feed_url, scrape_selector, last_scanned, topics FROM blogs WHERE id = ?`, id)
 	return scanBlog(row)
 }
 
 func (db *Database) GetBlogByName(name string) (*model.Blog, error) {
-	row := db.conn.QueryRow(`SELECT id, name, url, feed_url, scrape_selector, last_scanned FROM blogs WHERE name = ?`, name)
+	row := db.conn.QueryRow(`SELECT id, name, url, feed_url, scrape_selector, last_scanned, topics FROM blogs WHERE name = ?`, name)
 	return scanBlog(row)
 }
 
 func (db *Database) GetBlogByURL(url string) (*model.Blog, error) {
-	row := db.conn.QueryRow(`SELECT id, name, url, feed_url, scrape_selector, last_scanned FROM blogs WHERE url = ?`, url)
+	row := db.conn.QueryRow(`SELECT id, name, url, feed_url, scrape_selector, last_scanned, topics FROM blogs WHERE url = ?`, url)
 	return scanBlog(row)
 }
 
 func (db *Database) ListBlogs() ([]model.Blog, error) {
-	rows, err := db.conn.Query(`SELECT id, name, url, feed_url, scrape_selector, last_scanned FROM blogs ORDER BY name`)
+	rows, err := db.conn.Query(`SELECT id, name, url, feed_url, scrape_selector, last_scanned, topics FROM blogs ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var blogs []model.Blog
+	for rows.Next() {
+		blog, err := scanBlog(rows)
+		if err != nil {
+			return nil, err
+		}
+		if blog != nil {
+			blogs = append(blogs, *blog)
+		}
+	}
+	return blogs, rows.Err()
+}
+
+func (db *Database) ListBlogsByTopics(topics []string) ([]model.Blog, error) {
+	if len(topics) == 0 {
+		return db.ListBlogs()
+	}
+	query := `SELECT id, name, url, feed_url, scrape_selector, last_scanned, topics FROM blogs WHERE `
+	conditions := make([]string, len(topics))
+	args := make([]interface{}, len(topics))
+	for i, t := range topics {
+		conditions[i] = "(',' || LOWER(topics) || ',' LIKE '%,' || LOWER(?) || ',%')"
+		args[i] = t
+	}
+	query += "(" + strings.Join(conditions, " OR ") + ") ORDER BY name"
+	rows, err := db.conn.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -181,9 +237,9 @@ func (db *Database) ListBlogs() ([]model.Blog, error) {
 
 func (db *Database) UpdateBlog(blog model.Blog) error {
 	_, err := db.conn.Exec(
-		`UPDATE blogs SET name = ?, url = ?, feed_url = ?, scrape_selector = ?, last_scanned = ? WHERE id = ?`,
+		`UPDATE blogs SET name = ?, url = ?, feed_url = ?, scrape_selector = ?, last_scanned = ?, topics = ? WHERE id = ?`,
 		blog.Name, blog.URL, nullIfEmpty(blog.FeedURL), nullIfEmpty(blog.ScrapeSelector),
-		formatTimePtr(blog.LastScanned), blog.ID,
+		formatTimePtr(blog.LastScanned), listToString(blog.Topics), blog.ID,
 	)
 	return err
 }
@@ -214,7 +270,7 @@ func (db *Database) AddArticle(article model.Article) (model.Article, error) {
 		`INSERT INTO articles (blog_id, title, url, published_date, discovered_date, is_read, categories) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		article.BlogID, article.Title, article.URL,
 		formatTimePtr(article.PublishedDate), formatTimePtr(article.DiscoveredDate),
-		article.IsRead, categoriesToString(article.Categories),
+		article.IsRead, listToString(article.Categories),
 	)
 	if err != nil {
 		return article, err
@@ -246,7 +302,7 @@ func (db *Database) AddArticlesBulk(articles []model.Article) (int, error) {
 		_, err := stmt.Exec(
 			article.BlogID, article.Title, article.URL,
 			formatTimePtr(article.PublishedDate), formatTimePtr(article.DiscoveredDate),
-			article.IsRead, categoriesToString(article.Categories),
+			article.IsRead, listToString(article.Categories),
 		)
 		if err != nil {
 			_ = _tx.Rollback()
@@ -350,6 +406,98 @@ func (db *Database) ListArticles(unreadOnly bool, blogID *int64, category *strin
 	return articles, rows.Err()
 }
 
+type TopicStats struct {
+	Blogs   int
+	Total   int
+	Read    int
+	Unread  int
+}
+
+type Stats struct {
+	TotalBlogs     int
+	TotalArticles  int
+	ReadArticles   int
+	UnreadArticles int
+	OldestArticle  *time.Time
+	NewestArticle  *time.Time
+	LastScanTime   *time.Time
+	Topics         map[string]*TopicStats
+	DatabaseSize   int64
+}
+
+func (db *Database) GetStats() (*Stats, error) {
+	stats := &Stats{Topics: make(map[string]*TopicStats)}
+
+	err := db.conn.QueryRow(`SELECT COUNT(*) FROM blogs`).Scan(&stats.TotalBlogs)
+	if err != nil {
+		return nil, err
+	}
+	err = db.conn.QueryRow(`SELECT COUNT(*) FROM articles`).Scan(&stats.TotalArticles)
+	if err != nil {
+		return nil, err
+	}
+	err = db.conn.QueryRow(`SELECT COUNT(*) FROM articles WHERE is_read = 1`).Scan(&stats.ReadArticles)
+	if err != nil {
+		return nil, err
+	}
+	stats.UnreadArticles = stats.TotalArticles - stats.ReadArticles
+
+	var oldest, newest sql.NullString
+	_ = db.conn.QueryRow(`SELECT MIN(discovered_date) FROM articles`).Scan(&oldest)
+	_ = db.conn.QueryRow(`SELECT MAX(discovered_date) FROM articles`).Scan(&newest)
+	if oldest.Valid {
+		if t, err := parseTime(oldest.String); err == nil {
+			stats.OldestArticle = &t
+		}
+	}
+	if newest.Valid {
+		if t, err := parseTime(newest.String); err == nil {
+			stats.NewestArticle = &t
+		}
+	}
+
+	var lastScan sql.NullString
+	_ = db.conn.QueryRow(`SELECT MAX(last_scanned) FROM blogs`).Scan(&lastScan)
+	if lastScan.Valid {
+		if t, err := parseTime(lastScan.String); err == nil {
+			stats.LastScanTime = &t
+		}
+	}
+
+	rows, err := db.conn.Query(`SELECT b.topics, COUNT(a.id), COALESCE(SUM(CASE WHEN a.is_read = 1 THEN 1 ELSE 0 END), 0) FROM blogs b LEFT JOIN articles a ON a.blog_id = b.id WHERE b.topics IS NOT NULL AND b.topics != '' GROUP BY b.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw string
+		var total, read int
+		if err := rows.Scan(&raw, &total, &read); err != nil {
+			return nil, err
+		}
+		for _, t := range listFromString(&raw) {
+			ts, ok := stats.Topics[t]
+			if !ok {
+				ts = &TopicStats{}
+				stats.Topics[t] = ts
+			}
+			ts.Blogs++
+			ts.Total += total
+			ts.Read += read
+			ts.Unread += total - read
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if info, err := os.Stat(db.path); err == nil {
+		stats.DatabaseSize = info.Size()
+	}
+
+	return stats, nil
+}
+
 func (db *Database) MarkArticleRead(id int64) (bool, error) {
 	result, err := db.conn.Exec(`UPDATE articles SET is_read = 1 WHERE id = ?`, id)
 	if err != nil {
@@ -360,6 +508,14 @@ func (db *Database) MarkArticleRead(id int64) (bool, error) {
 		return false, err
 	}
 	return rows > 0, nil
+}
+
+func (db *Database) DeleteOldArticles(olderThan time.Time) (int64, error) {
+	result, err := db.conn.Exec(`DELETE FROM articles WHERE discovered_date < ?`, olderThan.Format(sqliteTimeLayout))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 func (db *Database) MarkArticleUnread(id int64) (bool, error) {
@@ -376,14 +532,15 @@ func (db *Database) MarkArticleUnread(id int64) (bool, error) {
 
 func scanBlog(scanner interface{ Scan(dest ...any) error }) (*model.Blog, error) {
 	var (
-		id            int64
-		name          string
-		url           string
-		feedURL       sql.NullString
+		id             int64
+		name           string
+		url            string
+		feedURL        sql.NullString
 		scrapeSelector sql.NullString
-		lastScanned   sql.NullString
+		lastScanned    sql.NullString
+		topics         sql.NullString
 	)
-	if err := scanner.Scan(&id, &name, &url, &feedURL, &scrapeSelector, &lastScanned); err != nil {
+	if err := scanner.Scan(&id, &name, &url, &feedURL, &scrapeSelector, &lastScanned, &topics); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -395,6 +552,7 @@ func scanBlog(scanner interface{ Scan(dest ...any) error }) (*model.Blog, error)
 		URL:            url,
 		FeedURL:        feedURL.String,
 		ScrapeSelector: scrapeSelector.String,
+		Topics:         listFromString(&topics.String),
 	}
 	if lastScanned.Valid {
 		if parsed, err := parseTime(lastScanned.String); err == nil {
@@ -427,7 +585,7 @@ func scanArticle(scanner interface{ Scan(dest ...any) error }) (*model.Article, 
 		Title:          title,
 		URL:            url,
 		IsRead:         isRead,
-		Categories:     categoriesFromString(&categories.String),
+		Categories:     listFromString(&categories.String),
 	}
 	if publishedDate.Valid {
 		if parsed, err := parseTime(publishedDate.String); err == nil {

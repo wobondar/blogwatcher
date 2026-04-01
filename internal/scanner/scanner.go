@@ -115,6 +115,10 @@ func ScanAllBlogs(db *storage.Database, workers int) ([]ScanResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ScanBlogs(db, blogs, workers)
+}
+
+func ScanBlogs(db *storage.Database, blogs []model.Blog, workers int) ([]ScanResult, error) {
 	if workers <= 1 {
 		results := make([]ScanResult, 0, len(blogs))
 		for _, blog := range blogs {

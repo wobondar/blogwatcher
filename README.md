@@ -8,7 +8,11 @@ A Go CLI tool to track blog articles, detect new posts, and manage read/unread s
 -   **Automatic Feed Discovery** - Detects RSS/Atom URLs from blog homepages
 -   **Read/Unread Management** - Track which articles you've read
 -   **Category Support** - View and filter articles by RSS/Atom categories
+-   **Blog Topics** - Organize blogs by topics, filter across commands
 -   **Blog Filtering** - View articles from specific blogs
+-   **JSON Output** - Machine-readable output for scripting
+-   **Status Dashboard** - Overview of blogs, articles, and topics at a glance
+-   **Cleanup** - Remove old articles to keep the database lean
 -   **Duplicate Prevention** - Never tracks the same article twice
 -   **Colored CLI Output** - User-friendly terminal interface
 
@@ -38,6 +42,9 @@ blogwatcher add "My Favorite Blog" https://example.com/blog
 # Add with explicit feed URL
 blogwatcher add "Tech Blog" https://techblog.com --feed-url https://techblog.com/rss.xml
 
+# Add with topics
+blogwatcher add "Security Blog" https://secblog.com --topics "security,infosec"
+
 # Add with HTML scraping selector (for blogs without feeds)
 blogwatcher add "No-RSS Blog" https://norss.com --scrape-selector "article h2 a"
 ```
@@ -47,6 +54,9 @@ blogwatcher add "No-RSS Blog" https://norss.com --scrape-selector "article h2 a"
 ```bash
 # List all tracked blogs
 blogwatcher blogs
+
+# Filter blogs by topics
+blogwatcher blogs --topics "security,go"
 
 # Remove a blog (and all its articles)
 blogwatcher remove "My Favorite Blog"
@@ -63,6 +73,9 @@ blogwatcher scan
 
 # Scan a specific blog
 blogwatcher scan "Tech Blog"
+
+# Scan only blogs with specific topics
+blogwatcher scan --topics "security"
 ```
 
 ### Viewing Articles
@@ -80,24 +93,69 @@ blogwatcher articles --blog "Tech Blog"
 # Filter by category (case-insensitive)
 blogwatcher articles --category "AI"
 
+# Filter by blog topics
+blogwatcher articles --topics "security,go"
+
 # Combine filters
 blogwatcher articles --blog "Tech Blog" --category "Security"
+
+# Output as JSON
+blogwatcher articles --json
 ```
 
 ### Managing Read Status
 
 ```bash
-# Mark an article as read (use article ID from articles list)
+# Mark articles as read (use article IDs from articles list)
 blogwatcher read 42
+blogwatcher read 1 2 3
 
-# Mark an article as unread
+# Mark articles as unread
 blogwatcher unread 42
+blogwatcher unread 5 6
 
 # Mark all unread articles as read
 blogwatcher read-all
 
 # Mark all unread articles as read for a blog (skip prompt)
 blogwatcher read-all --blog "Tech Blog" --yes
+
+# Mark all unread articles as read for topics
+blogwatcher read-all --topics "security" --yes
+```
+
+### Status
+
+```bash
+# Show database summary
+blogwatcher status
+
+# Output as JSON (useful for scripting)
+blogwatcher status --json
+```
+
+### Cleanup
+
+```bash
+# Remove articles older than 365 days (default)
+blogwatcher cleanup
+
+# Remove articles older than 90 days
+blogwatcher cleanup --days 90
+
+# Skip confirmation
+blogwatcher cleanup --days 90 --yes
+```
+
+### JSON Output
+
+Most commands support `--json` for machine-readable output:
+
+```bash
+blogwatcher articles --json
+blogwatcher blogs --json
+blogwatcher status --json
+blogwatcher cleanup --json
 ```
 
 ## How It Works
@@ -132,8 +190,10 @@ When RSS isn't available, provide a CSS selector that matches article links:
 
 BlogWatcher stores data in SQLite at `~/.blogwatcher/blogwatcher.db`:
 
--   **blogs** - Tracked blogs (name, URL, feed URL, scrape selector)
+-   **blogs** - Tracked blogs (name, URL, feed URL, scrape selector, topics)
 -   **articles** - Discovered articles (title, URL, dates, read status, categories)
+
+Performance indexes are automatically created on `blog_id`, `is_read`/`discovered_date`, and `discovered_date`.
 
 ## Development
 
